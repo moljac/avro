@@ -89,17 +89,7 @@ import datetime
 import decimal
 import struct
 import warnings
-from typing import (
-    BinaryIO,
-    Deque,
-    Generator,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Union,
-)
+from typing import IO, Generator, Iterable, List, Mapping, Optional, Sequence, Union
 
 import avro.constants
 import avro.errors
@@ -206,23 +196,28 @@ _ITERATORS["error"] = _ITERATORS["request"] = _ITERATORS["record"]
 class BinaryDecoder:
     """Read leaf values."""
 
-    _reader: BinaryIO
+    _reader: IO[bytes]
 
-    def __init__(self, reader: BinaryIO) -> None:
+    def __init__(self, reader: IO[bytes]) -> None:
         """
         reader is a Python object on which we can call read, seek, and tell.
         """
         self._reader = reader
 
     @property
-    def reader(self) -> BinaryIO:
+    def reader(self) -> IO[bytes]:
         return self._reader
 
     def read(self, n: int) -> bytes:
         """
         Read n bytes.
         """
-        return self.reader.read(n)
+        if n < 0:
+            raise avro.errors.InvalidAvroBinaryEncoding(f"Requested {n} bytes to read, expected positive integer.")
+        read_bytes = self.reader.read(n)
+        if len(read_bytes) != n:
+            raise avro.errors.InvalidAvroBinaryEncoding(f"Read {len(read_bytes)} bytes, expected {n} bytes")
+        return read_bytes
 
     def read_null(self) -> None:
         """
@@ -410,16 +405,16 @@ class BinaryDecoder:
 class BinaryEncoder:
     """Write leaf values."""
 
-    _writer: BinaryIO
+    _writer: IO[bytes]
 
-    def __init__(self, writer: BinaryIO) -> None:
+    def __init__(self, writer: IO[bytes]) -> None:
         """
         writer is a Python object on which we can call write.
         """
         self._writer = writer
 
     @property
-    def writer(self) -> BinaryIO:
+    def writer(self) -> IO[bytes]:
         return self._writer
 
     def write(self, datum: bytes) -> None:
@@ -430,7 +425,6 @@ class BinaryEncoder:
         """
         null is written as zero bytes
         """
-        pass
 
     def write_boolean(self, datum: bool) -> None:
         """
@@ -477,7 +471,7 @@ class BinaryEncoder:
         signed long is 8, 8 bytes are written.
         """
         sign, digits, exp = datum.as_tuple()
-        if (-1 * exp) > scale:
+        if (-1 * int(exp)) > scale:
             raise avro.errors.AvroOutOfScaleException(scale, datum, exp)
 
         unscaled_datum = 0
@@ -503,7 +497,7 @@ class BinaryEncoder:
         Decimal in fixed are encoded as size of fixed bytes.
         """
         sign, digits, exp = datum.as_tuple()
-        if (-1 * exp) > scale:
+        if (-1 * int(exp)) > scale:
             raise avro.errors.AvroOutOfScaleException(scale, datum, exp)
 
         unscaled_datum = 0
@@ -514,7 +508,7 @@ class BinaryEncoder:
         size_in_bits = size * 8
         offset_bits = size_in_bits - bits_req
 
-        mask = 2 ** size_in_bits - 1
+        mask = 2**size_in_bits - 1
         bit = 1
         for i in range(bits_req):
             mask ^= bit
@@ -579,7 +573,7 @@ class BinaryEncoder:
         self.write_long(microseconds)
 
     def _timedelta_total_microseconds(self, timedelta_: datetime.timedelta) -> int:
-        return timedelta_.microseconds + (timedelta_.seconds + timedelta_.days * 24 * 3600) * 10 ** 6
+        return timedelta_.microseconds + (timedelta_.seconds + timedelta_.days * 24 * 3600) * 10**6
 
     def write_timestamp_millis_long(self, datum: datetime.datetime) -> None:
         """
@@ -694,8 +688,8 @@ class DatumReader:
                     warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal precision {precision}. Must be a positive integer."))
                     return decoder.read_bytes()
                 scale = writers_schema.get_prop("scale")
-                if not (isinstance(scale, int) and scale > 0):
-                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a positive integer."))
+                if not (isinstance(scale, int) and scale >= 0):
+                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a non-negative integer."))
                     return decoder.read_bytes()
                 return decoder.read_decimal_from_bytes(precision, scale)
             return decoder.read_bytes()
@@ -706,8 +700,8 @@ class DatumReader:
                     warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal precision {precision}. Must be a positive integer."))
                     return self.read_fixed(writers_schema, readers_schema, decoder)
                 scale = writers_schema.get_prop("scale")
-                if not (isinstance(scale, int) and scale > 0):
-                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a positive integer."))
+                if not (isinstance(scale, int) and scale >= 0):
+                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a non-negative integer."))
                     return self.read_fixed(writers_schema, readers_schema, decoder)
                 return decoder.read_decimal_from_fixed(precision, scale, writers_schema.size)
             return self.read_fixed(writers_schema, readers_schema, decoder)
@@ -805,7 +799,7 @@ class DatumReader:
         while block_count != 0:
             if block_count < 0:
                 block_count = -block_count
-                block_size = decoder.read_long()
+                decoder.skip_long()
             for i in range(block_count):
                 read_items.append(self.read_data(writers_schema.items, readers_schema.items, decoder))
             block_count = decoder.read_long()
@@ -842,7 +836,7 @@ class DatumReader:
         while block_count != 0:
             if block_count < 0:
                 block_count = -block_count
-                block_size = decoder.read_long()
+                decoder.skip_long()
             for i in range(block_count):
                 key = decoder.read_utf8()
                 read_items[key] = self.read_data(writers_schema.values, readers_schema.values, decoder)
@@ -1062,8 +1056,8 @@ class DatumWriter:
         if writers_schema.type == "bytes":
             if logical_type == "decimal":
                 scale = writers_schema.get_prop("scale")
-                if not (isinstance(scale, int) and scale > 0):
-                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a positive integer."))
+                if not (isinstance(scale, int) and scale >= 0):
+                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a non-negative integer."))
                 elif not isinstance(datum, decimal.Decimal):
                     warnings.warn(avro.errors.IgnoredLogicalType(f"{datum} is not a decimal type"))
                 else:
@@ -1075,8 +1069,8 @@ class DatumWriter:
             if logical_type == "decimal":
                 scale = writers_schema.get_prop("scale")
                 size = writers_schema.size
-                if not (isinstance(scale, int) and scale > 0):
-                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a positive integer."))
+                if not (isinstance(scale, int) and scale >= 0):
+                    warnings.warn(avro.errors.IgnoredLogicalType(f"Invalid decimal scale {scale}. Must be a non-negative integer."))
                 elif not isinstance(datum, decimal.Decimal):
                     warnings.warn(avro.errors.IgnoredLogicalType(f"{datum} is not a decimal type"))
                 else:

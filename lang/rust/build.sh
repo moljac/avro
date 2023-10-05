@@ -15,9 +15,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e
+set -e  # exit on error
 
-cd `dirname "$0"`
+build_dir="../../build/rust"
+dist_dir="../../dist/rust"
+
+function clean {
+  rm -rf $build_dir
+  rm -rf $dist_dir
+}
+
+
+function prepare_build {
+  clean
+  mkdir -p $build_dir
+}
+
+cd $(dirname "$0")
 
 for target in "$@"
 do
@@ -32,13 +46,24 @@ do
       cargo test
       ;;
     dist)
-      cargo build --release --lib --all-features
-      cargo package
-      mkdir -p  ../../dist/rust
-      cp target/package/avro-rs-*.crate ../../dist/rust
+      mkdir -p ${dist_dir}
+      cargo build --release --lib --all-features --workspace
+      git archive --output=apache-avro.tgz HEAD
+      mv apache-avro.tgz ${dist_dir}/
+      ;;
+    interop-data-generate)
+      prepare_build
+      RUST_LOG=apache_avro=debug RUST_BACKTRACE=1 cargo run --features snappy,zstandard,bzip,xz --example generate_interop_data
+      ;;
+    interop-data-test)
+      prepare_build
+      echo "Running interop data tests"
+      RUST_LOG=apache_avro=debug RUST_BACKTRACE=1 cargo run --features snappy,zstandard,bzip,xz --example test_interop_data
+      echo -e "\nRunning single object encoding interop data tests"
+      RUST_LOG=apache_avro=debug RUST_BACKTRACE=1 cargo run --example test_interop_single_object_encoding
       ;;
     *)
-      echo "Usage: $0 {lint|test|dist|clean}" >&2
+      echo "Usage: $0 {lint|test|dist|clean|interop-data-generate|interop-data-test}" >&2
       exit 1
   esac
 done

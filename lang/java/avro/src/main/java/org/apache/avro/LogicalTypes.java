@@ -18,18 +18,35 @@
 
 package org.apache.avro;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class LogicalTypes {
 
   private static final Logger LOG = LoggerFactory.getLogger(LogicalTypes.class);
 
+  /**
+   * Factory interface and SPI for logical types. A {@code LogicalTypeFactory} can
+   * be registered in two ways:
+   *
+   * <ol>
+   * <li>Manually, via {@link #register(LogicalTypeFactory)} or
+   * {@link #register(String, LogicalTypeFactory)}</li>
+   *
+   * <li>Automatically, when the {@code LogicalTypeFactory} implementation is a
+   * public class with a public no-arg constructor, is named in a file called
+   * {@code /META-INF/services/org.apache.avro.LogicalTypes$LogicalTypeFactory},
+   * and both are available in the classpath</li>
+   * </ol>
+   *
+   * @see ServiceLoader
+   */
   public interface LogicalTypeFactory {
     LogicalType fromSchema(Schema schema);
 
@@ -39,6 +56,12 @@ public class LogicalTypes {
   }
 
   private static final Map<String, LogicalTypeFactory> REGISTERED_TYPES = new ConcurrentHashMap<>();
+
+  static {
+    for (LogicalTypeFactory logicalTypeFactory : ServiceLoader.load(LogicalTypeFactory.class)) {
+      register(logicalTypeFactory);
+    }
+  }
 
   /**
    * Register a logical type.
@@ -159,6 +182,7 @@ public class LogicalTypes {
   }
 
   private static final String DECIMAL = "decimal";
+  private static final String DURATION = "duration";
   private static final String UUID = "uuid";
   private static final String DATE = "date";
   private static final String TIME_MILLIS = "time-millis";
@@ -178,10 +202,16 @@ public class LogicalTypes {
     return new Decimal(precision, scale);
   }
 
-  private static final LogicalType UUID_TYPE = new LogicalType("uuid");
+  private static final LogicalType UUID_TYPE = new Uuid();
 
   public static LogicalType uuid() {
     return UUID_TYPE;
+  }
+
+  private static final LogicalType DURATION_TYPE = new Duration();
+
+  public static LogicalType duration() {
+    return DURATION_TYPE;
   }
 
   private static final Date DATE_TYPE = new Date();
@@ -224,6 +254,38 @@ public class LogicalTypes {
 
   public static LocalTimestampMicros localTimestampMicros() {
     return LOCAL_TIMESTAMP_MICROS_TYPE;
+  }
+
+  /** Uuid represents a uuid without a time */
+  public static class Uuid extends LogicalType {
+    private Uuid() {
+      super(UUID);
+    }
+
+    @Override
+    public void validate(Schema schema) {
+      super.validate(schema);
+      if (schema.getType() != Schema.Type.STRING) {
+        throw new IllegalArgumentException("Uuid can only be used with an underlying string type");
+      }
+    }
+  }
+
+  /**
+   * Duration represents a duration, consisting on months, days and milliseconds
+   */
+  public static class Duration extends LogicalType {
+    private Duration() {
+      super(DURATION);
+    }
+
+    @Override
+    public void validate(Schema schema) {
+      super.validate(schema);
+      if (schema.getType() != Schema.Type.FIXED || schema.getFixedSize() != 12) {
+        throw new IllegalArgumentException("Duration can only be used with an underlying fixed type of size 12.");
+      }
+    }
   }
 
   /** Decimal represents arbitrary-precision fixed-scale decimal numbers */
@@ -306,7 +368,7 @@ public class LogicalTypes {
     }
 
     private boolean hasProperty(Schema schema, String name) {
-      return (schema.getObjectProp(name) != null);
+      return schema.propsContainsKey(name);
     }
 
     private int getInt(Schema schema, String name) {

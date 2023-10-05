@@ -18,15 +18,18 @@
 
 package org.apache.avro;
 
-import java.math.RoundingMode;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericEnumSymbol;
 import org.apache.avro.generic.GenericFixed;
 import org.apache.avro.generic.IndexedRecord;
+import org.apache.avro.util.TimePeriod;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
@@ -106,11 +109,12 @@ public class Conversions {
       byte fillByte = (byte) (value.signum() < 0 ? 0xFF : 0x00);
       byte[] unscaled = value.unscaledValue().toByteArray();
       byte[] bytes = new byte[schema.getFixedSize()];
-      int offset = bytes.length - unscaled.length;
+      int unscaledLength = unscaled.length;
+      int offset = bytes.length - unscaledLength;
 
-      // Fill the front of the array and copy remaining with unscaled values
+      // Fill the front with the filler and copy the unscaled value into the remainder
       Arrays.fill(bytes, 0, offset, fillByte);
-      System.arraycopy(unscaled, 0, bytes, offset, bytes.length - offset);
+      System.arraycopy(unscaled, 0, bytes, offset, unscaledLength);
 
       return new GenericData.Fixed(schema, bytes);
     }
@@ -146,8 +150,45 @@ public class Conversions {
     }
   }
 
+  public static class DurationConversion extends Conversion<TimePeriod> {
+    @Override
+    public Class<TimePeriod> getConvertedType() {
+      return TimePeriod.class;
+    }
+
+    @Override
+    public String getLogicalTypeName() {
+      return "duration";
+    }
+
+    @Override
+    public Schema getRecommendedSchema() {
+      return LogicalTypes.duration().addToSchema(Schema.createFixed("time.Duration",
+          "A 12-byte byte array encoding a duration in months, days and milliseconds.", null, 12));
+    }
+
+    @Override
+    public TimePeriod fromFixed(GenericFixed value, Schema schema, LogicalType type) {
+      IntBuffer buffer = ByteBuffer.wrap(value.bytes()).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+      long months = Integer.toUnsignedLong(buffer.get());
+      long days = Integer.toUnsignedLong(buffer.get());
+      long millis = Integer.toUnsignedLong(buffer.get());
+      return TimePeriod.of(months, days, millis);
+    }
+
+    @Override
+    public GenericFixed toFixed(TimePeriod value, Schema schema, LogicalType type) {
+      ByteBuffer buffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN);
+      IntBuffer intBuffer = buffer.asIntBuffer();
+      intBuffer.put((int) value.getMonths());
+      intBuffer.put((int) value.getDays());
+      intBuffer.put((int) value.getMillis());
+      return new GenericData.Fixed(schema, buffer.array());
+    }
+  }
+
   /**
-   * Convert a underlying representation of a logical type (such as a ByteBuffer)
+   * Convert an underlying representation of a logical type (such as a ByteBuffer)
    * to a higher level object (such as a BigDecimal).
    *
    * @param datum      The object to be converted.
@@ -157,9 +198,9 @@ public class Conversions {
    * @param conversion The tool used to finish the conversion. Cannot be null if
    *                   datum is not null.
    * @return The result object, which is a high level object of the logical type.
-   *         If a null datum is passed in, a null value will be returned.
-   * @throws IllegalArgumentException if a null schema, type or conversion is
-   *                                  passed in while datum is not null.
+   *         The null datum always converts to a null value.
+   * @throws IllegalArgumentException if datum is not null, but schema, type or
+   *                                  conversion is.
    */
   public static Object convertToLogicalType(Object datum, Schema schema, LogicalType type, Conversion<?> conversion) {
     if (datum == null) {
@@ -176,9 +217,9 @@ public class Conversions {
       case RECORD:
         return conversion.fromRecord((IndexedRecord) datum, schema, type);
       case ENUM:
-        return conversion.fromEnumSymbol((GenericEnumSymbol) datum, schema, type);
+        return conversion.fromEnumSymbol((GenericEnumSymbol<?>) datum, schema, type);
       case ARRAY:
-        return conversion.fromArray((Collection) datum, schema, type);
+        return conversion.fromArray((Collection<?>) datum, schema, type);
       case MAP:
         return conversion.fromMap((Map<?, ?>) datum, schema, type);
       case FIXED:
@@ -201,13 +242,13 @@ public class Conversions {
       return datum;
     } catch (ClassCastException e) {
       throw new AvroRuntimeException(
-          "Cannot convert " + datum + ":" + datum.getClass().getSimpleName() + ": expected generic type", e);
+          "Cannot convert " + datum + ':' + datum.getClass().getSimpleName() + ": expected generic type", e);
     }
   }
 
   /**
    * Convert a high level representation of a logical type (such as a BigDecimal)
-   * to the its underlying representation object (such as a ByteBuffer)
+   * to its underlying representation object (such as a ByteBuffer)
    *
    * @param datum      The object to be converted.
    * @param schema     The schema of datum. Cannot be null if datum is not null.
@@ -218,8 +259,8 @@ public class Conversions {
    * @return The result object, which is an underlying representation object of
    *         the logical type. If the input param datum is null, a null value will
    *         be returned.
-   * @throws IllegalArgumentException if a null schema, type or conversion is
-   *                                  passed in while datum is not null.
+   * @throws IllegalArgumentException if datum is not null, but schema, type or
+   *                                  conversion is.
    */
   public static <T> Object convertToRawType(Object datum, Schema schema, LogicalType type, Conversion<T> conversion) {
     if (datum == null) {
@@ -262,7 +303,7 @@ public class Conversions {
       return datum;
     } catch (ClassCastException e) {
       throw new AvroRuntimeException(
-          "Cannot convert " + datum + ":" + datum.getClass().getSimpleName() + ": expected logical type", e);
+          "Cannot convert " + datum + ':' + datum.getClass().getSimpleName() + ": expected logical type", e);
     }
   }
 
