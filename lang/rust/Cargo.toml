@@ -49,7 +49,7 @@ harness = false
 byteorder = "1.4.3"
 crc = { version = "1.8.1", optional = true }
 digest = "0.9"
-libflate = "1.1.1"
+libflate = "2.1.0"
 num-bigint = "0.4.2"
 rand = "0.8.4"
 regex = "1.5.4"
